@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PSV Route Recorder</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        #mapid { height: 300px; width: 100%; }
+        body {
+          margin: 0;
+          height: 100vh;
+        }
+        .main-content {
+          overflow-y: auto;
+          flex: 1 1 auto;
+        }
+        footer {
+          position: sticky;
+          bottom: 0;
+          left: 0;
+          width: 100%;
+          background-color: white;
+          text-align: center;
+          padding: 10px;
+          box-shadow: 0px -2px 5px rgba(0, 0, 0, 0.1);
+          z-index: 10;
+        }
+        .app-shell {
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="app-shell">
+      <div class="main-content flex items-center justify-center p-2">
+        <div id="root" class="w-full"></div>
+      </div>
+      <footer class="bg-white text-center text-xs text-gray-500 p-4">
+        <div class="flex items-center justify-center gap-2">
+          <img src="fme logo chosen font trans bg white.jpg" alt="Focus Means Everything Logo" class="h-6" style="background: white; border-radius: 4px;">
+          <span>
+            Conceived and Designed by
+            <a href="https://www.focusmeanseverything.com" target="_blank" class="hover:underline font-semibold">Focus Means Everything</a>
+          </span>
+        </div>
+        <div class="mt-1 italic">Our Focus Is On You</div>
+      </footer>
+    </div>
+
+    <script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <script type="text/babel">
+      function formatTime(date) {
+        return date.toLocaleTimeString();
+      }
+
+      function downloadFile(filename, content, type) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function stopsToKML(stops, routeName) {
+        return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n  <name>${routeName}</name>\n  <Placemark>\n    <LineString>\n      <coordinates>\n        ${stops.map(s => `${s.lng},${s.lat},0`).join(' ')}\n      </coordinates>\n    </LineString>\n  </Placemark>\n  ${stops.map((s, i) => `<Placemark><name>Stop ${i+1}</name><Point><coordinates>${s.lng},${s.lat},0</coordinates></Point></Placemark>`).join('\n  ')}\n</Document>\n</kml>`;
+      }
+
+      function stopsToGPX(stops, routeName) {
+        return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PSV Route Recorder" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>${routeName}</name>\n    <trkseg>\n      ${stops.map(s => `<trkpt lat=\"${s.lat}\" lon=\"${s.lng}\"><time>${s.time.toISOString()}</time></trkpt>`).join('\n      ')}\n    </trkseg>\n  </trk>\n</gpx>`;
+      }
+
+      function stopsToCSV(stops) {
+        return 'Stop,Latitude,Longitude,Time\n' + stops.map((s, i) => `${i+1},${s.lat},${s.lng},${formatTime(s.time)}`).join('\n');
+      }
+
+      function PSVRouteRecorder() {
+        const [routeName, setRouteName] = React.useState('');
+        const [recording, setRecording] = React.useState(false);
+        const [stops, setStops] = React.useState([]);
+        const [status, setStatus] = React.useState([]);
+        const [nextDisabled, setNextDisabled] = React.useState(false);
+        const [finished, setFinished] = React.useState(false);
+        const [viewRoute, setViewRoute] = React.useState(false);
+        const mapRef = React.useRef(null);
+
+        const handleStart = () => {
+          if (!routeName.trim()) {
+            setStatus(s => [
+              ...s,
+              { msg: 'Please enter a route name before starting.', type: 'error' }
+            ]);
+            return;
+          }
+          setRecording(true);
+          setStops([]);
+          setStatus([{ msg: `Route started: "${routeName}"`, type: 'info' }]);
+          setFinished(false);
+          setViewRoute(false);
+        };
+
+        const handleNextStop = () => {
+          if (!navigator.geolocation) {
+            setStatus(s => [
+              ...s,
+              { msg: 'Geolocation not supported on this device.', type: 'error' }
+            ]);
+            return;
+          }
+          setNextDisabled(true);
+          navigator.geolocation.getCurrentPosition(
+            pos => {
+              const { latitude, longitude } = pos.coords;
+              const time = new Date();
+              setStops(stops => {
+                const newStops = [...stops, { lat: latitude, lng: longitude, time }];
+                setStatus(s => [
+                  ...s,
+                  { msg: `🟢 Stop ${newStops.length} saved at ${formatTime(time)}`, type: 'success' }
+                ]);
+                return newStops;
+              });
+            },
+            err => {
+              setStatus(s => [
+                ...s,
+                { msg: 'Failed to get location. Please try again.', type: 'error' }
+              ]);
+            }
+          );
+          setTimeout(() => setNextDisabled(false), 3000);
+        };
+
+        const handleFinish = () => {
+          setRecording(false);
+          setFinished(true);
+          setStatus(s => [
+            ...s,
+            { msg: `✅ Route "${routeName}" saved!`, type: 'success' }
+          ]);
+        };
+
+        const createGoogleMapsUrl = () => {
+          if (!stops.length) return '';
+          
+          const waypoints = stops.map(s => `${s.lat},${s.lng}`);
+          const origin = waypoints.shift();
+          const destination = waypoints.pop() || origin;
+          const waypointsParam = waypoints.length ? `&waypoints=${waypoints.join('|')}` : '';
+          
+          return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
+        };
+
+        const handleExport = async (type) => {
+          if (!stops.length) {
+            setStatus(s => [
+              ...s,
+              { msg: 'No stops to export. Please record a route first.', type: 'error' }
+            ]);
+            return;
+          }
+          
+          const saveFile = (filename, content, fileType, description) => {
+            downloadFile(filename, content, fileType);
+            setStatus(s => [
+              ...s,
+              { msg: `💾 ${filename} saved to your device (${description})`, type: 'success' }
+            ]);
+          };
+          
+          if (type === 'kml') {
+            saveFile(`${routeName}.kml`, stopsToKML(stops, routeName), 'application/vnd.google-earth.kml+xml', 'Google Maps');
+          } else if (type === 'gpx') {
+            saveFile(`${routeName}.gpx`, stopsToGPX(stops, routeName), 'application/gpx+xml', 'TomTom');
+          } else if (type === 'csv') {
+            saveFile(`${routeName}.csv`, stopsToCSV(stops), 'text/csv', 'Other Apps');
+          } else if (type === 'all') {
+            // Create ZIP file with all exports
+            try {
+              const zip = new JSZip();
+              const googleMapsUrl = createGoogleMapsUrl();
+              
+              // Add all files to the ZIP
+              zip.file(`${routeName}.kml`, stopsToKML(stops, routeName));
+              zip.file(`${routeName}.gpx`, stopsToGPX(stops, routeName));
+              zip.file(`${routeName}.csv`, stopsToCSV(stops));
+              zip.file(`${routeName}-URL.txt`, googleMapsUrl);
+              
+              // Generate ZIP file and download
+              const zipBlob = await zip.generateAsync({ type: 'blob' });
+              downloadFile(`${routeName}.zip`, zipBlob, 'application/zip');
+              
+              setStatus(s => [
+                ...s,
+                { msg: `📦 ${routeName}.zip created with all files! Extract to access folder.`, type: 'success' }
+              ]);
+            } catch (error) {
+              setStatus(s => [
+                ...s,
+                { msg: 'Failed to create ZIP file. Please try again.', type: 'error' }
+              ]);
+            }
+          }
+        };
+
+        const handleOpenOnMaps = () => {
+          if (!stops.length) {
+            setStatus(s => [
+              ...s,
+              { msg: 'No stops to create URL. Please record a route first.', type: 'error' }
+            ]);
+            return;
+          }
+          const googleMapsUrl = createGoogleMapsUrl();
+          window.open(googleMapsUrl, '_blank');
+        };
+
+        const handleSaveUrl = () => {
+          if (!stops.length) {
+            setStatus(s => [
+              ...s,
+              { msg: 'No stops to create URL. Please record a route first.', type: 'error' }
+            ]);
+            return;
+          }
+          
+          const googleMapsUrl = createGoogleMapsUrl();
+          downloadFile(`${routeName}-URL.txt`, googleMapsUrl, 'text/plain');
+          setStatus(s => [
+            ...s,
+            { msg: `💾 ${routeName}-URL.txt saved to your device`, type: 'success' }
+          ]);
+        };
+
+        const handleViewRoute = () => {
+          setViewRoute(true);
+          setTimeout(() => {
+            if (mapRef.current && window.L) {
+              mapRef.current.innerHTML = '';
+              const map = window.L.map(mapRef.current).setView(
+                stops.length ? [stops[0].lat, stops[0].lng] : [51.505, -0.09],
+                13
+              );
+              window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+              }).addTo(map);
+              if (stops.length) {
+                const latlngs = stops.map(s => [s.lat, s.lng]);
+                window.L.polyline(latlngs, { color: 'blue' }).addTo(map);
+                stops.forEach((s, i) => {
+                  window.L.marker([s.lat, s.lng]).addTo(map).bindPopup(`Stop ${i+1}`);
+                });
+                map.fitBounds(latlngs);
+              }
+            }
+          }, 100);
+        };
+
+        const handleNewRoute = () => {
+          setRouteName('');
+          setStops([]);
+          setStatus([]);
+          setRecording(false);
+          setFinished(false);
+          setViewRoute(false);
+        };
+
+        return (
+          <div className="min-h-screen bg-gray-100 flex flex-col items-center p-2">
+            <div className="w-full max-w-md bg-white rounded-lg shadow-md p-4 mt-4">
+              <h1 className="text-2xl font-bold mb-4 text-center">🚍 PSV Route Recorder</h1>
+              {!recording && !finished && (
+                <div className="flex flex-col gap-2 mb-4">
+                  <input
+                    className="border rounded px-3 py-2 text-lg"
+                    placeholder="Route Name"
+                    value={routeName}
+                    onChange={e => setRouteName(e.target.value)}
+                    disabled={recording}
+                  />
+                  <button
+                    className="bg-blue-600 text-white rounded py-2 text-lg font-semibold active:bg-blue-800 transition"
+                    onClick={handleStart}
+                  >
+                    ▶️ Start Route
+                  </button>
+                </div>
+              )}
+              {recording && (
+                <div className="flex flex-col gap-2 mb-4">
+                  <button
+                    className={`rounded py-2 text-lg font-semibold transition ${nextDisabled ? 'bg-gray-400 text-white' : 'bg-green-600 text-white active:bg-green-800'}`}
+                    onClick={handleNextStop}
+                    disabled={nextDisabled}
+                  >
+                    {nextDisabled ? 'Wait 3s…' : '⏺️ Next Stop'}
+                  </button>
+                  <button
+                    className="bg-red-600 text-white rounded py-2 text-lg font-semibold active:bg-red-800 transition"
+                    onClick={handleFinish}
+                  >
+                    🏁 Finish Route
+                  </button>
+                </div>
+              )}
+              <div className="bg-gray-50 rounded p-2 mb-4 min-h-[60px]">
+                <div className="font-semibold mb-1">Status:</div>
+                <ul className="text-sm space-y-1">
+                  {status.map((s, i) => (
+                    <li key={i} className={
+                      s.type === 'error' ? 'text-red-600' :
+                      s.type === 'success' ? 'text-green-700' :
+                      'text-gray-700'
+                    }>
+                      {s.msg}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {stops.length > 0 && (
+                <div className="bg-gray-50 rounded p-2 mb-4">
+                  <div className="font-semibold mb-1">Stops:</div>
+                  <ul className="text-xs space-y-1">
+                    {stops.map((s, i) => (
+                      <li key={i}>Stop {i+1}: {s.lat.toFixed(5)}, {s.lng.toFixed(5)} @ {formatTime(s.time)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {finished && (
+                <div className="flex flex-col gap-2 mb-4">
+                  <button
+                    className="bg-indigo-600 text-white rounded py-2 text-lg font-semibold active:bg-indigo-800 transition"
+                    onClick={handleViewRoute}
+                  >
+                    🗺️ View Route
+                  </button>
+                  <button
+                    className="bg-green-700 text-white rounded py-2 text-lg font-semibold active:bg-green-900 transition"
+                    onClick={handleOpenOnMaps}
+                  >
+                    📍 Open on Maps
+                  </button>
+                  <button
+                    className="bg-orange-500 text-white rounded py-2 text-lg font-semibold active:bg-orange-700 transition"
+                    onClick={handleSaveUrl}
+                  >
+                    💾 Save URL as File
+                  </button>
+                  <button
+                    className="bg-green-600 text-white rounded py-2 text-lg font-semibold active:bg-green-800 transition"
+                    onClick={() => handleExport('kml')}
+                  >
+                    📍 Export for Google Maps (KML)
+                  </button>
+                  <button
+                    className="bg-blue-600 text-white rounded py-2 text-lg font-semibold active:bg-blue-800 transition"
+                    onClick={() => handleExport('gpx')}
+                  >
+                    📍 Export for TomTom (GPX)
+                  </button>
+                  <button
+                    className="bg-gray-600 text-white rounded py-2 text-lg font-semibold active:bg-gray-800 transition"
+                    onClick={() => handleExport('csv')}
+                  >
+                    📍 Export for Other Apps (CSV)
+                  </button>
+                  <button
+                    className="bg-yellow-500 text-white rounded py-2 text-lg font-semibold active:bg-yellow-700 transition"
+                    onClick={() => handleExport('all')}
+                  >
+                    📦 Export All (ZIP)
+                  </button>
+                  <button
+                    className="bg-gray-400 text-white rounded py-2 text-lg font-semibold active:bg-gray-600 transition"
+                    onClick={handleNewRoute}
+                  >
+                    🔄 Start New Route
+                  </button>
+                </div>
+              )}
+              {viewRoute && (
+                <div className="mb-4">
+                  <div ref={mapRef} style={{ height: 300, width: '100%' }} className="rounded border" id="mapid"></div>
+                  <div className="text-xs text-gray-500 mt-1">(Map powered by OpenStreetMap)</div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.render(<PSVRouteRecorder />, document.getElementById('root'));
+    </script>
+</body>
+</html>
